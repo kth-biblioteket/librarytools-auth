@@ -1,0 +1,27 @@
+{
+  "name": "librarytools-auth",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "22.23.2"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.1",
+    "hono": "^4.6.20",
+    "jose": "^5.9.6",
+    "openid-client": "^6.8.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "eslint": "^9",
+    "tsx": "^4.23.13",
+    "typescript": "^5"
+  }
+}

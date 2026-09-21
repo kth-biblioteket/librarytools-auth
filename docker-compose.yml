@@ -1,0 +1,40 @@
+# Production deployment, same pattern as bookingtools' docker-compose.yml:
+# image built and pushed to ghcr.io by CI, run on the shared apps-net network
+# behind Traefik.
+#
+# Deploy prerequisites on the server:
+#   - the external "apps-net" network already exists
+#   - a .env file next to this one (copy .env.example and fill it in)
+#   - a librarytools-auth.env file next to this one too (copy
+#     librarytools-auth.env.example and fill it in) - injected into the
+#     container itself, see env_file below
+#
+# Unlike bookingtools, this service has NO database of its own — it never
+# provisions users or sessions, only signs a short-lived identity token that
+# each consuming app verifies against its own JWKS endpoint (see src/jwt.ts).
+
+services:
+  librarytools-auth:
+    container_name: librarytools-auth
+    image: ghcr.io/kth-biblioteket/librarytools-auth:${REPO_TYPE}
+    restart: always
+    environment:
+      TZ: ${TZ}
+    env_file:
+      - librarytools-auth.env
+    labels:
+      - "traefik.enable=true"
+      # Fixed - this is the one path the reused Entra registration is
+      # allowed to redirect to (https://apps.lib.kth.se/mrbs). Unlike
+      # bookingtools' PATHPREFIX, this is not meant to change per environment
+      # beyond prod/ref host.
+      - "traefik.http.routers.librarytools-auth.rule=Host(`${DOMAIN_NAME}`) && PathPrefix(`/mrbs`)"
+      - "traefik.http.routers.librarytools-auth.entrypoints=websecure"
+      - "traefik.http.routers.librarytools-auth.tls=true"
+      - "traefik.http.routers.librarytools-auth.tls.certresolver=myresolver"
+    networks:
+      - "apps-net"
+
+networks:
+  apps-net:
+    external: true
