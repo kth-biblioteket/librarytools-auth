@@ -39,11 +39,12 @@ https://apps.lib.kth.se/mrbs/login?returnTo=<path>&errorTo=<path>
 ```
 
 - `returnTo`: where to come back to after a successful login, e.g.
-  `/minapp/sida?x=1` (URL-encoded). Defaults to `DEFAULT_RETURN_TO`.
+  `/minapp/sida?x=1` (URL-encoded). Defaults to `DEFAULT_RETURN_TO` (`/`).
 - `errorTo`: the app's own login/error page. On failure the browser lands on
   `errorTo?error=oidc_state` (the round trip took too long / cookies were
   lost) or `errorTo?error=oidc_failed` (ADFS or the token exchange failed).
-  Defaults to `LOGIN_ERROR_PATH`.
+  Defaults to `LOGIN_ERROR_PATH`, this service's own simple error page
+  `/mrbs/error`. Pass your own so the user stays in your app.
 
 Both must be relative paths on the same host (`/...`, not `//host` or a full
 URL); anything else is ignored.

@@ -28,8 +28,13 @@ const IDENTITY_COOKIE_MAX_AGE = 60; // matches the identity JWT's own lifetime �
 const IDENTITY_COOKIE_NAME = "kth_identity";
 
 const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN; // e.g. apps.lib.kth.se / apps-ref.lib.kth.se
-const DEFAULT_RETURN_TO = process.env.DEFAULT_RETURN_TO ?? "/bookingtools/grupprum/rooms";
-const LOGIN_ERROR_PATH = process.env.LOGIN_ERROR_PATH ?? "/bookingtools/login";
+// Fallbacks for when the calling app didn't say (no returnTo / errorTo) -
+// deliberately not tied to any one app, since every app on the host shares
+// this service.
+const DEFAULT_RETURN_TO = process.env.DEFAULT_RETURN_TO ?? "/";
+const LOGIN_ERROR_PATH = process.env.LOGIN_ERROR_PATH ?? "/mrbs/error";
+// Not a fallback: /mrbs/* used to be bookingtools' own URLs, so old
+// bookmarks are forwarded there.
 const LEGACY_TARGET_PREFIX = process.env.LEGACY_TARGET_PREFIX ?? "/bookingtools";
 
 const app = new Hono().basePath("/mrbs");
@@ -100,8 +105,9 @@ app.get("/", async (c) => {
   const origin = getExternalOrigin(c);
 
   if (!code || !state) {
-    // Not an ADFS callback at all (nobody should be browsing here directly).
-    return c.redirect(`${origin}${DEFAULT_RETURN_TO}`);
+    // Not an ADFS callback, so an old bookmark of bookingtools' former start
+    // page.
+    return c.redirect(`${origin}${LEGACY_TARGET_PREFIX}/`, 301);
   }
 
   const cookieState = getCookie(c, "oidc_state");
@@ -147,6 +153,41 @@ app.get("/", async (c) => {
   }
 });
 
+const ERROR_MESSAGES: Record<string, { sv: string; en: string }> = {
+  oidc_state: {
+    sv: "Inloggningen tog för lång tid eller avbröts. Försök igen.",
+    en: "The login took too long or was interrupted. Please try again.",
+  },
+  oidc_failed: {
+    sv: "Inloggningen via KTH misslyckades. Försök igen om en stund.",
+    en: "Logging in with KTH failed. Please try again in a moment.",
+  },
+};
+
+/** The default error page, for apps that don't pass their own errorTo. Only
+ * known error codes are shown - the query is never echoed into the page. */
+app.get("/error", (c) => {
+  const message = ERROR_MESSAGES[c.req.query("error") ?? ""] ?? ERROR_MESSAGES.oidc_failed;
+  return c.html(`<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inloggningen misslyckades</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem; color: #212121; }
+  a { color: #1954a6; }
+</style>
+</head>
+<body>
+<h1>Inloggningen misslyckades</h1>
+<p>${message.sv}</p>
+<p lang="en">${message.en}</p>
+<p><a href="/mrbs/login">Försök igen / Try again</a></p>
+</body>
+</html>`);
+});
+
 /** Safety net for old bookmarks/QR codes pointing at bookingtools' former
  * /mrbs/* paths (back when bookingtools itself owned this prefix). Swaps the
  * prefix and keeps the rest of the path + query, so /mrbs/rooms/12?date=...
@@ -156,7 +197,6 @@ app.get("/*", (c) => {
   const origin = getExternalOrigin(c);
   const url = new URL(c.req.url);
   const rest = url.pathname.replace(/^\/mrbs/, "");
-  if (!rest || rest === "/") return c.redirect(`${origin}${DEFAULT_RETURN_TO}`, 301);
   return c.redirect(`${origin}${LEGACY_TARGET_PREFIX}${rest}${url.search}`, 301);
 });
 
