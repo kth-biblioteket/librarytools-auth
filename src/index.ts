@@ -30,6 +30,7 @@ const IDENTITY_COOKIE_NAME = "kth_identity";
 const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN; // e.g. apps.lib.kth.se / apps-ref.lib.kth.se
 const DEFAULT_RETURN_TO = process.env.DEFAULT_RETURN_TO ?? "/bookingtools/grupprum/rooms";
 const LOGIN_ERROR_PATH = process.env.LOGIN_ERROR_PATH ?? "/bookingtools/login";
+const LEGACY_TARGET_PREFIX = process.env.LEGACY_TARGET_PREFIX ?? "/bookingtools";
 
 const app = new Hono().basePath("/mrbs");
 
@@ -133,10 +134,16 @@ app.get("/", async (c) => {
 });
 
 /** Safety net for old bookmarks/QR codes pointing at bookingtools' former
- * /mrbs/* paths (back when bookingtools itself owned this prefix). */
+ * /mrbs/* paths (back when bookingtools itself owned this prefix). Swaps the
+ * prefix and keeps the rest of the path + query, so /mrbs/rooms/12?date=...
+ * lands on /bookingtools/rooms/12?date=..., whose legacy shim then forwards
+ * it to the right schedule. */
 app.get("/*", (c) => {
   const origin = getExternalOrigin(c);
-  return c.redirect(`${origin}${DEFAULT_RETURN_TO}`, 301);
+  const url = new URL(c.req.url);
+  const rest = url.pathname.replace(/^\/mrbs/, "");
+  if (!rest || rest === "/") return c.redirect(`${origin}${DEFAULT_RETURN_TO}`, 301);
+  return c.redirect(`${origin}${LEGACY_TARGET_PREFIX}${rest}${url.search}`, 301);
 });
 
 const port = Number(process.env.PORT ?? 3000);
