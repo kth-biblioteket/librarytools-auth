@@ -33,18 +33,6 @@ const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN; // e.g. apps.lib.kth.se / apps-
 // this service.
 const DEFAULT_RETURN_TO = process.env.DEFAULT_RETURN_TO || "/";
 const LOGIN_ERROR_PATH = process.env.LOGIN_ERROR_PATH || "/mrbs/error";
-// Where old bookmarks of whatever app used to live under /mrbs/* are
-// forwarded (path + query kept). Unset: no rewriting, they go to
-// DEFAULT_RETURN_TO.
-const LEGACY_TARGET_PREFIX = process.env.LEGACY_TARGET_PREFIX || null;
-
-// 301 only when actually forwarding: the fallback must not be cached
-// permanently, or setting the prefix later wouldn't reach those browsers.
-const LEGACY_REDIRECT_STATUS = LEGACY_TARGET_PREFIX ? 301 : 302;
-
-function legacyRedirectPath(rest: string, search: string): string {
-  return LEGACY_TARGET_PREFIX ? `${LEGACY_TARGET_PREFIX}${rest || "/"}${search}` : DEFAULT_RETURN_TO;
-}
 
 const app = new Hono().basePath("/mrbs");
 
@@ -114,9 +102,8 @@ app.get("/", async (c) => {
   const origin = getExternalOrigin(c);
 
   if (!code || !state) {
-    // Not an ADFS callback, so an old bookmark of whatever used to live at
-    // /mrbs.
-    return c.redirect(`${origin}${legacyRedirectPath("/", "")}`, LEGACY_REDIRECT_STATUS);
+    // Not an ADFS callback (a direct visit or an old bookmark).
+    return c.redirect(`${origin}${DEFAULT_RETURN_TO}`);
   }
 
   const cookieState = getCookie(c, "oidc_state");
@@ -197,16 +184,10 @@ app.get("/error", (c) => {
 </html>`);
 });
 
-/** Safety net for old bookmarks/QR codes pointing at /mrbs/* paths from
- * before this service owned the prefix. With LEGACY_TARGET_PREFIX set, swaps
- * the prefix and keeps the rest of the path + query (e.g. /mrbs/rooms/12?date=...
- * -> <prefix>/rooms/12?date=...); otherwise sends them to DEFAULT_RETURN_TO. */
-app.get("/*", (c) => {
-  const origin = getExternalOrigin(c);
-  const url = new URL(c.req.url);
-  const rest = url.pathname.replace(/^\/mrbs/, "");
-  return c.redirect(`${origin}${legacyRedirectPath(rest, url.search)}`, LEGACY_REDIRECT_STATUS);
-});
+/** Anything else under /mrbs (old bookmarks from before this service owned
+ * the prefix, typos): nothing here belongs to any app, so just send the
+ * browser to the neutral fallback. */
+app.get("/*", (c) => c.redirect(`${getExternalOrigin(c)}${DEFAULT_RETURN_TO}`));
 
 const port = Number(process.env.PORT ?? 3000);
 serve({ fetch: app.fetch, port }, (info) => {
