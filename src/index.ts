@@ -53,13 +53,23 @@ function safeReturnTo(value: string | undefined | null): string | null {
 }
 
 function clearOidcCookies(c: Parameters<typeof deleteCookie>[0]) {
-  for (const name of ["oidc_state", "oidc_nonce", "oidc_verifier", "oidc_return_to"]) {
+  for (const name of ["oidc_state", "oidc_nonce", "oidc_verifier", "oidc_return_to", "oidc_error_to"]) {
     deleteCookie(c, name, { path: "/" });
   }
 }
 
+/** Appends ?error=<code> to the calling app's own error page (errorTo),
+ * falling back to LOGIN_ERROR_PATH when the app didn't give one. */
+function errorRedirectPath(errorTo: string | null, error: "oidc_state" | "oidc_failed"): string {
+  const path = errorTo ?? LOGIN_ERROR_PATH;
+  return `${path}${path.includes("?") ? "&" : "?"}error=${error}`;
+}
+
 app.get("/login", async (c) => {
   const returnTo = safeReturnTo(c.req.query("returnTo"));
+  // Each app's own login/error page, so a failed round trip lands back in
+  // the app that started it rather than always in bookingtools.
+  const errorTo = safeReturnTo(c.req.query("errorTo"));
   const { authorizationUrl, state, nonce, codeVerifier } = await buildAuthorizationRequest(
     getExternalOrigin(c)
   );
@@ -69,6 +79,9 @@ app.get("/login", async (c) => {
   setCookie(c, "oidc_verifier", codeVerifier, oidcCookieOptions());
   if (returnTo) {
     setCookie(c, "oidc_return_to", returnTo, oidcCookieOptions());
+  }
+  if (errorTo) {
+    setCookie(c, "oidc_error_to", errorTo, oidcCookieOptions());
   }
 
   return c.redirect(authorizationUrl.toString());
@@ -95,10 +108,11 @@ app.get("/", async (c) => {
   const cookieNonce = getCookie(c, "oidc_nonce");
   const cookieVerifier = getCookie(c, "oidc_verifier");
   const returnTo = safeReturnTo(getCookie(c, "oidc_return_to"));
+  const errorTo = safeReturnTo(getCookie(c, "oidc_error_to"));
 
   if (!cookieState || !cookieNonce || !cookieVerifier) {
     clearOidcCookies(c);
-    return c.redirect(`${origin}${LOGIN_ERROR_PATH}?error=oidc_state`);
+    return c.redirect(`${origin}${errorRedirectPath(errorTo, "oidc_state")}`);
   }
 
   try {
@@ -129,7 +143,7 @@ app.get("/", async (c) => {
   } catch (error) {
     console.error("KTH OIDC login failed:", error);
     clearOidcCookies(c);
-    return c.redirect(`${origin}${LOGIN_ERROR_PATH}?error=oidc_failed`);
+    return c.redirect(`${origin}${errorRedirectPath(errorTo, "oidc_failed")}`);
   }
 });
 
