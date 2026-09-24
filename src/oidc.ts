@@ -30,10 +30,11 @@ function getOidcConfig(): Promise<client.Configuration> {
   return configPromise;
 }
 
-/** The redirect_uri sent to Entra ID. This service's root literally *is* the
- * registered, fixed redirect_uri — no path to append. */
+/** The redirect_uri sent to Entra ID: the registered, fixed
+ * https://<host>/mrbs. origin is the bare scheme+host, so the Hono basePath
+ * has to be appended here - it's not part of it. */
 export function getRedirectUri(origin: string): string {
-  return origin;
+  return `${origin}/mrbs`;
 }
 
 export type OidcRequest = {
