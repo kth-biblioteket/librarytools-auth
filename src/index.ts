@@ -31,11 +31,20 @@ const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN; // e.g. apps.lib.kth.se / apps-
 // Fallbacks for when the calling app didn't say (no returnTo / errorTo) -
 // deliberately not tied to any one app, since every app on the host shares
 // this service.
-const DEFAULT_RETURN_TO = process.env.DEFAULT_RETURN_TO ?? "/";
-const LOGIN_ERROR_PATH = process.env.LOGIN_ERROR_PATH ?? "/mrbs/error";
-// Not a fallback: /mrbs/* used to be bookingtools' own URLs, so old
-// bookmarks are forwarded there.
-const LEGACY_TARGET_PREFIX = process.env.LEGACY_TARGET_PREFIX ?? "/bookingtools";
+const DEFAULT_RETURN_TO = process.env.DEFAULT_RETURN_TO || "/";
+const LOGIN_ERROR_PATH = process.env.LOGIN_ERROR_PATH || "/mrbs/error";
+// Where old bookmarks of whatever app used to live under /mrbs/* are
+// forwarded (path + query kept). Unset: no rewriting, they go to
+// DEFAULT_RETURN_TO.
+const LEGACY_TARGET_PREFIX = process.env.LEGACY_TARGET_PREFIX || null;
+
+// 301 only when actually forwarding: the fallback must not be cached
+// permanently, or setting the prefix later wouldn't reach those browsers.
+const LEGACY_REDIRECT_STATUS = LEGACY_TARGET_PREFIX ? 301 : 302;
+
+function legacyRedirectPath(rest: string, search: string): string {
+  return LEGACY_TARGET_PREFIX ? `${LEGACY_TARGET_PREFIX}${rest || "/"}${search}` : DEFAULT_RETURN_TO;
+}
 
 const app = new Hono().basePath("/mrbs");
 
@@ -105,9 +114,9 @@ app.get("/", async (c) => {
   const origin = getExternalOrigin(c);
 
   if (!code || !state) {
-    // Not an ADFS callback, so an old bookmark of bookingtools' former start
-    // page.
-    return c.redirect(`${origin}${LEGACY_TARGET_PREFIX}/`, 301);
+    // Not an ADFS callback, so an old bookmark of whatever used to live at
+    // /mrbs.
+    return c.redirect(`${origin}${legacyRedirectPath("/", "")}`, LEGACY_REDIRECT_STATUS);
   }
 
   const cookieState = getCookie(c, "oidc_state");
@@ -188,16 +197,15 @@ app.get("/error", (c) => {
 </html>`);
 });
 
-/** Safety net for old bookmarks/QR codes pointing at bookingtools' former
- * /mrbs/* paths (back when bookingtools itself owned this prefix). Swaps the
- * prefix and keeps the rest of the path + query, so /mrbs/rooms/12?date=...
- * lands on /bookingtools/rooms/12?date=..., whose legacy shim then forwards
- * it to the right schedule. */
+/** Safety net for old bookmarks/QR codes pointing at /mrbs/* paths from
+ * before this service owned the prefix. With LEGACY_TARGET_PREFIX set, swaps
+ * the prefix and keeps the rest of the path + query (e.g. /mrbs/rooms/12?date=...
+ * -> <prefix>/rooms/12?date=...); otherwise sends them to DEFAULT_RETURN_TO. */
 app.get("/*", (c) => {
   const origin = getExternalOrigin(c);
   const url = new URL(c.req.url);
   const rest = url.pathname.replace(/^\/mrbs/, "");
-  return c.redirect(`${origin}${LEGACY_TARGET_PREFIX}${rest}${url.search}`, 301);
+  return c.redirect(`${origin}${legacyRedirectPath(rest, url.search)}`, LEGACY_REDIRECT_STATUS);
 });
 
 const port = Number(process.env.PORT ?? 3000);
