@@ -45,7 +45,9 @@ const ALLOWED_APP_ORIGINS = new Set(
     .map((entry) => new URL(entry).origin)
 );
 
-const app = new Hono().basePath("/mrbs");
+// strict: false so /mrbs/ is the callback too, not the catch-all - a
+// trailing slash on the way back from ADFS must not silently drop the login.
+const app = new Hono({ strict: false }).basePath("/mrbs");
 
 function oidcCookieOptions() {
   return {
