@@ -33,6 +33,17 @@ const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN; // e.g. apps.lib.kth.se / apps-
 // this service.
 const DEFAULT_RETURN_TO = process.env.DEFAULT_RETURN_TO || "/";
 const LOGIN_ERROR_PATH = process.env.LOGIN_ERROR_PATH || "/mrbs/error";
+// Apps on other hosts (e.g. https://spacefinder.lib.kth.se) allowed as an
+// absolute returnTo/errorTo. An explicit list, not a domain, since not every
+// host under lib.kth.se is ours. Apps on this service's own host never need
+// to be listed - they use relative paths.
+const ALLOWED_APP_ORIGINS = new Set(
+  (process.env.ALLOWED_APP_ORIGINS ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => new URL(entry).origin)
+);
 
 const app = new Hono().basePath("/mrbs");
 
@@ -46,12 +57,50 @@ function oidcCookieOptions() {
   };
 }
 
-/** Only a same-origin relative path is safe to carry through as returnTo —
- * any path on the shared domain is fine now (cross-app), just no
- * protocol-relative "//host" open-redirect trick. */
-function safeReturnTo(value: string | undefined | null): string | null {
+/** Where a returnTo/errorTo points: a path on this service's own host, or
+ * an absolute URL on one of ALLOWED_APP_ORIGINS. */
+type Target = { kind: "local"; path: string } | { kind: "remote"; url: URL };
+
+/** Anything else is rejected: no protocol-relative "//host" (or "/\host",
+ * which browsers read the same way) and no unlisted hosts. */
+function parseTarget(value: string | undefined | null): Target | null {
   if (!value) return null;
-  return /^\/(?!\/)/.test(value) ? value : null;
+  if (/^\/(?![\/\\])/.test(value)) return { kind: "local", path: value };
+  try {
+    const url = new URL(value);
+    if (ALLOWED_APP_ORIGINS.has(url.origin) && !url.username && !url.password) {
+      return { kind: "remote", url };
+    }
+  } catch {
+    // Not a URL at all.
+  }
+  return null;
+}
+
+/** The fallbacks come from env, so a bad value fails at startup rather than
+ * mid-login. */
+function requireTarget(name: string, value: string): Target {
+  const target = parseTarget(value);
+  if (!target) {
+    throw new Error(`${name}=${value} must be a /path or a URL on ALLOWED_APP_ORIGINS.`);
+  }
+  return target;
+}
+
+const DEFAULT_RETURN_TARGET = requireTarget("DEFAULT_RETURN_TO", DEFAULT_RETURN_TO);
+const LOGIN_ERROR_TARGET = requireTarget("LOGIN_ERROR_PATH", LOGIN_ERROR_PATH);
+
+function targetUrl(target: Target, origin: string): string {
+  return target.kind === "local" ? `${origin}${target.path}` : target.url.href;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function clearOidcCookies(c: Parameters<typeof deleteCookie>[0]) {
@@ -62,16 +111,17 @@ function clearOidcCookies(c: Parameters<typeof deleteCookie>[0]) {
 
 /** Appends ?error=<code> to the calling app's own error page (errorTo),
  * falling back to LOGIN_ERROR_PATH when the app didn't give one. */
-function errorRedirectPath(errorTo: string | null, error: "oidc_state" | "oidc_failed"): string {
-  const path = errorTo ?? LOGIN_ERROR_PATH;
-  return `${path}${path.includes("?") ? "&" : "?"}error=${error}`;
+function errorRedirectUrl(errorTo: Target | null, origin: string, error: "oidc_state" | "oidc_failed"): string {
+  const url = new URL(targetUrl(errorTo ?? LOGIN_ERROR_TARGET, origin));
+  url.searchParams.set("error", error);
+  return url.href;
 }
 
 app.get("/login", async (c) => {
-  const returnTo = safeReturnTo(c.req.query("returnTo"));
+  const returnTo = c.req.query("returnTo");
   // Each app's own login/error page, so a failed round trip lands back in
-  // the app that started it rather than always in bookingtools.
-  const errorTo = safeReturnTo(c.req.query("errorTo"));
+  // the app that started it.
+  const errorTo = c.req.query("errorTo");
   const { authorizationUrl, state, nonce, codeVerifier } = await buildAuthorizationRequest(
     getExternalOrigin(c)
   );
@@ -79,11 +129,12 @@ app.get("/login", async (c) => {
   setCookie(c, "oidc_state", state, oidcCookieOptions());
   setCookie(c, "oidc_nonce", nonce, oidcCookieOptions());
   setCookie(c, "oidc_verifier", codeVerifier, oidcCookieOptions());
-  if (returnTo) {
-    setCookie(c, "oidc_return_to", returnTo, oidcCookieOptions());
+  // Validated again on the way back, since cookies can't be trusted either.
+  if (parseTarget(returnTo)) {
+    setCookie(c, "oidc_return_to", returnTo!, oidcCookieOptions());
   }
-  if (errorTo) {
-    setCookie(c, "oidc_error_to", errorTo, oidcCookieOptions());
+  if (parseTarget(errorTo)) {
+    setCookie(c, "oidc_error_to", errorTo!, oidcCookieOptions());
   }
 
   return c.redirect(authorizationUrl.toString());
@@ -103,18 +154,18 @@ app.get("/", async (c) => {
 
   if (!code || !state) {
     // Not an ADFS callback (a direct visit or an old bookmark).
-    return c.redirect(`${origin}${DEFAULT_RETURN_TO}`);
+    return c.redirect(targetUrl(DEFAULT_RETURN_TARGET, origin));
   }
 
   const cookieState = getCookie(c, "oidc_state");
   const cookieNonce = getCookie(c, "oidc_nonce");
   const cookieVerifier = getCookie(c, "oidc_verifier");
-  const returnTo = safeReturnTo(getCookie(c, "oidc_return_to"));
-  const errorTo = safeReturnTo(getCookie(c, "oidc_error_to"));
+  const returnTo = parseTarget(getCookie(c, "oidc_return_to")) ?? DEFAULT_RETURN_TARGET;
+  const errorTo = parseTarget(getCookie(c, "oidc_error_to"));
 
   if (!cookieState || !cookieNonce || !cookieVerifier) {
     clearOidcCookies(c);
-    return c.redirect(`${origin}${errorRedirectPath(errorTo, "oidc_state")}`);
+    return c.redirect(errorRedirectUrl(errorTo, origin, "oidc_state"));
   }
 
   try {
@@ -128,10 +179,35 @@ app.get("/", async (c) => {
 
     const identityToken = await signIdentityToken(
       { sub: claims.sub, email: claims.email, name: claims.name, isGroupAdmin },
-      origin
+      origin,
+      returnTo.kind === "local" ? origin : returnTo.url.origin
     );
 
     clearOidcCookies(c);
+
+    if (returnTo.kind === "remote") {
+      // Another host: the cookie wouldn't reach it, and a wider cookie domain
+      // would leak the token to every host under it. POST it straight to the
+      // app instead, so only the audience ever sees it.
+      c.header("Cache-Control", "no-store");
+      c.header("Referrer-Policy", "no-referrer");
+      return c.html(`<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Loggar in…</title>
+</head>
+<body>
+<form method="post" action="${escapeHtml(returnTo.url.href)}">
+<input type="hidden" name="${IDENTITY_COOKIE_NAME}" value="${escapeHtml(identityToken)}">
+<noscript><button type="submit">Fortsätt / Continue</button></noscript>
+</form>
+<script>document.forms[0].submit();</script>
+</body>
+</html>`);
+    }
+
     setCookie(c, IDENTITY_COOKIE_NAME, identityToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
@@ -141,11 +217,11 @@ app.get("/", async (c) => {
       maxAge: IDENTITY_COOKIE_MAX_AGE,
     });
 
-    return c.redirect(`${origin}${returnTo ?? DEFAULT_RETURN_TO}`);
+    return c.redirect(targetUrl(returnTo, origin));
   } catch (error) {
     console.error("KTH OIDC login failed:", error);
     clearOidcCookies(c);
-    return c.redirect(`${origin}${errorRedirectPath(errorTo, "oidc_failed")}`);
+    return c.redirect(errorRedirectUrl(errorTo, origin, "oidc_failed"));
   }
 });
 
@@ -187,7 +263,7 @@ app.get("/error", (c) => {
 /** Anything else under /mrbs (old bookmarks from before this service owned
  * the prefix, typos): nothing here belongs to any app, so just send the
  * browser to the neutral fallback. */
-app.get("/*", (c) => c.redirect(`${getExternalOrigin(c)}${DEFAULT_RETURN_TO}`));
+app.get("/*", (c) => c.redirect(targetUrl(DEFAULT_RETURN_TARGET, getExternalOrigin(c))));
 
 const port = Number(process.env.PORT ?? 3000);
 serve({ fetch: app.fetch, port }, (info) => {

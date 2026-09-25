@@ -61,7 +61,13 @@ export type IdentityClaims = {
   isGroupAdmin: boolean;
 };
 
-export async function signIdentityToken(claims: IdentityClaims, issuer: string): Promise<string> {
+/** audience is the origin of the app the token is handed to, so a token
+ * delivered to one app can't be replayed against another. */
+export async function signIdentityToken(
+  claims: IdentityClaims,
+  issuer: string,
+  audience: string
+): Promise<string> {
   const privateKey = await getPrivateKey();
   const jwk = await getPublicJwk();
 
@@ -69,6 +75,7 @@ export async function signIdentityToken(claims: IdentityClaims, issuer: string):
     .setProtectedHeader({ alg: ALG, kid: jwk.kid })
     .setSubject(claims.sub)
     .setIssuer(issuer)
+    .setAudience(audience)
     .setIssuedAt()
     .setExpirationTime(`${TOKEN_TTL_SECONDS}s`)
     .sign(privateKey);
